@@ -1,0 +1,58 @@
+name: Fetch APKs to release
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: 'Start row index (0-based) in index.csv'
+        required: true
+        default: '0'
+      count:
+        description: 'Number of APKs to fetch'
+        required: true
+        default: '25'
+      tag:
+        description: 'Release tag to attach assets to'
+        required: true
+        default: 'v1.0'
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch and upload APKs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - "${{ inputs.start }}" "${{ inputs.count }}" "${{ inputs.tag }}" <<'PY'
+          import csv, subprocess, sys, os
+          start = int(sys.argv[1]); count = int(sys.argv[2]); tag = sys.argv[3]
+          rows = list(csv.DictReader(open('index.csv', newline='', encoding='utf-8')))
+          rows.sort(key=lambda r: int(r['apk_size'] or 0))
+          sel = rows[start:start+count]
+          ok = 0; fail = 0
+          for r in sel:
+              pkg = r['package']; url = r['apk_url']
+              fn = "/tmp/%s.apk" % pkg
+              try:
+                  subprocess.run(['curl','-sL','--fail','--max-time','300','-o',fn,url], check=True)
+              except Exception as e:
+                  print('DL FAIL', pkg, e); fail += 1; continue
+              if not os.path.exists(fn) or os.path.getsize(fn) == 0:
+                  print('EMPTY', pkg); fail += 1; continue
+              p = subprocess.run(['gh','release','upload',tag,fn,'--clobber'], capture_output=True, text=True)
+              if p.returncode == 0:
+                  ok += 1
+                  print('OK', pkg, os.path.getsize(fn))
+              else:
+                  fail += 1
+                  print('UP FAIL', pkg, p.stderr[:200])
+              os.remove(fn)
+          print('DONE ok=%d fail=%d' % (ok, fail))
+          PY
